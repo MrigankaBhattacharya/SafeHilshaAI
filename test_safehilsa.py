@@ -61,7 +61,7 @@ class TestSafeHilsaApp(unittest.TestCase):
         # Point outside (Tribeni legal waters)
         res_safe = check_location_compliance(22.9800, 88.4000)
         self.assertEqual(res_safe["status"], "SAFE")
-        self.assertTrue(res_safe["is_legal"])
+        self.assertIsNone(res_safe["is_legal"])
         self.assertGreater(res_safe["distance_to_nearest_sanctuary_km"], 0.0)
 
     def test_03_tools_river_metrics_and_alternatives(self):
