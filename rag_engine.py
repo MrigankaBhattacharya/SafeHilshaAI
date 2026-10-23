@@ -31,7 +31,12 @@ COLLECTION_NAME = "safehilsa_regulations"
 # Version 2 paths & collection
 DEFAULT_CHROMA_DIR_V2 = os.path.join(BASE_DIR, "chroma_db_v2")
 COLLECTION_NAME_V2 = "safehilsa_verified_v2"
-DEFAULT_PROCESSED_CHUNKS = r"C:\safehilsa\processed_chunks\all_chunks.jsonl"
+LOCAL_SOURCE_PROCESSED = r"C:\safehilsa\processed_chunks\all_chunks.jsonl"
+DEFAULT_PROCESSED_CHUNKS = (
+    LOCAL_SOURCE_PROCESSED
+    if os.path.exists(LOCAL_SOURCE_PROCESSED)
+    else os.path.join(BASE_DIR, "data", "all_chunks.jsonl")
+)
 
 # Global runtime cache
 _EMBEDDING_MODEL = None
@@ -174,7 +179,11 @@ def load_verified_chunks(chunks_file: str = DEFAULT_PROCESSED_CHUNKS) -> Tuple[L
     Sanitizes all metadata fields into scalar types required by ChromaDB.
     """
     if not os.path.exists(chunks_file):
-        raise FileNotFoundError(f"Processed chunks file not found at: {chunks_file}")
+        fallback_file = os.path.join(BASE_DIR, "data", "all_chunks.jsonl")
+        if os.path.exists(fallback_file):
+            chunks_file = fallback_file
+        else:
+            raise FileNotFoundError(f"Processed chunks file not found at: {chunks_file}")
 
     documents = []
     metadatas = []

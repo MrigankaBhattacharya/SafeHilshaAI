@@ -28,7 +28,12 @@ from tools import (
     get_livelihood_support,
     SANCTUARIES_GEOJSON_PATH,
     FARAKKA_BARRAGE_LAT,
-    FARAKKA_BARRAGE_LON
+    FARAKKA_BARRAGE_LON,
+    FARAKKA_STATUTORY_RADIUS_KM,
+    NOTIFIED_REACHES,
+    SUNDARBANS_SANDBARS,
+    VERIFIED_HOOGHLY_BASELINE,
+    fetch_live_river_discharge
 )
 from agent import run_safehilsa_agent, check_ollama_status, SYSTEM_PROMPT
 from rag_engine import initialize_rag
@@ -512,9 +517,123 @@ def render_app():
             control_scale=True
         )
 
+        # Base Tiles: OpenStreetMap + CartoDB Positron + Free ESRI Satellite Imagery
         folium.TileLayer("CartoDB positron", name="Clean Nautical Vector").add_to(m)
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri World Imagery",
+            name="Satellite Imagery (ESRI Free)"
+        ).add_to(m)
 
-        # Render GeoJSON Sanctuaries Overlay
+        # 1. Determine temporal active ban state under Rule 50(2) (June-Aug & Oct-Dec)
+        if eval_date:
+            ban_active = eval_date.month in [6, 7, 8, 10, 11, 12]
+        else:
+            import datetime
+            ban_active = datetime.datetime.now().month in [6, 7, 8, 10, 11, 12]
+
+        corridor_color = "#DC2626" if ban_active else "#16A34A"
+        corridor_buffer_color = "#EF4444" if ban_active else "#22C55E"
+        temporal_badge = "🚨 SEASONAL BAN ACTIVE (June–Aug & Oct–Dec)" if ban_active else "ℹ️ PERMISSIBLE WINDOW (Ban Inactive)"
+
+        # 2. Render Notified Linear River Reaches (Rule 50(1)) with 2.5km Corridor Buffers
+        fg_reaches = folium.FeatureGroup(name="Notified River Reaches (Rule 50(1))", show=True)
+        for reach in NOTIFIED_REACHES:
+            poly = reach["polyline"]
+            # Polyline centerline
+            folium.PolyLine(
+                locations=poly,
+                color=corridor_color,
+                weight=5,
+                opacity=0.9,
+                dash_array="6, 4",
+                tooltip=f"{reach['name']} ({temporal_badge})",
+                popup=(
+                    f"<b>{reach['name']}</b><br>"
+                    f"<b>Statute:</b> {reach['legal_citation']}<br>"
+                    f"<b>River:</b> {reach['river']}<br>"
+                    f"<b>Districts:</b> {reach['districts']}<br>"
+                    f"<b>Status:</b> {temporal_badge}<br>"
+                    f"<b>Rule 50(2):</b> All fish catching prohibited during June–Aug and Oct–Dec."
+                )
+            ).add_to(fg_reaches)
+
+            # 2.5 km corridor buffer circles along segment nodes
+            for pt in poly:
+                folium.Circle(
+                    location=pt,
+                    radius=2500,  # 2.5 km buffer
+                    color=corridor_color,
+                    weight=1,
+                    fill=True,
+                    fill_color=corridor_buffer_color,
+                    fill_opacity=0.12,
+                    tooltip=f"{reach['name']} 2.5km River Corridor Buffer"
+                ).add_to(fg_reaches)
+        fg_reaches.add_to(m)
+
+        # 3. Render Farakka Barrage 5 sq km Statutory Prohibited Area (Rule 50(3)) & Sandbars
+        fg_statutory_areas = folium.FeatureGroup(name="Statutory 5 sq km Areas (Rule 50(3) & 50(1)(d))", show=True)
+        farakka_radius_m = FARAKKA_STATUTORY_RADIUS_KM * 1000  # ~1262m
+        folium.Circle(
+            location=[FARAKKA_BARRAGE_LAT, FARAKKA_BARRAGE_LON],
+            radius=farakka_radius_m,
+            color="#D97706",
+            weight=3,
+            fill=True,
+            fill_color="#F59E0B",
+            fill_opacity=0.35,
+            tooltip="⚠️ Rule 50(3): Farakka Barrage 5.0 sq km Statutory Area",
+            popup=(
+                "<b>Farakka Barrage Statutory Area (Rule 50(3))</b><br>"
+                "Status: Year-round prohibited area for Hilsa fishing.<br>"
+                "Statutory Area: 5.0 sq km around Barrage.<br>"
+                "Cadastral limitation: Coordinates missing in Gazette (High Enforcement Risk)."
+            )
+        ).add_to(fg_statutory_areas)
+
+        # Sundarbans Sandbars (Rule 50(1)(d))
+        for sb in SUNDARBANS_SANDBARS:
+            folium.Circle(
+                location=[sb["lat"], sb["lon"]],
+                radius=1262,
+                color="#B45309",
+                weight=2,
+                fill=True,
+                fill_color="#D97706",
+                fill_opacity=0.25,
+                tooltip=f"Rule 50(1)(d): {sb['name']} (5 sq km Sandbar)",
+                popup=(
+                    f"<b>{sb['name']}</b><br>"
+                    f"Statute: Rule 50(1)(d), W.B. Inland Fisheries Rules 1985<br>"
+                    f"Restriction: 5 sq km demarcated sandbar area.<br>"
+                    f"Ban window: June–August & October–December (Rule 50(2))."
+                )
+            ).add_to(fg_statutory_areas)
+        fg_statutory_areas.add_to(m)
+
+        # 4. Render River Hydrology Monitoring Stations Layer (ICAR-CIFRI 179 Buoys)
+        fg_stations = folium.FeatureGroup(name="River Hydrology Stations (CIFRI 179)", show=True)
+        for sid, st_data in VERIFIED_HOOGHLY_BASELINE.items():
+            s_lat = st_data["latitude"]
+            s_lon = st_data["longitude"]
+            folium.Marker(
+                location=[s_lat, s_lon],
+                tooltip=f"📡 Station: {st_data['station_name']} (Reach: {st_data['river_reach']})",
+                popup=(
+                    f"<b>{st_data['station_name']} Monitoring Station</b><br>"
+                    f"<b>Reach:</b> {st_data['river_reach']} ({st_data['basin']})<br>"
+                    f"<b>Dissolved Oxygen:</b> {st_data['dissolved_oxygen_mg_l']} mg/L<br>"
+                    f"<b>Discharge (baseline):</b> {st_data['discharge_cumecs']} cumecs<br>"
+                    f"<b>Turbidity:</b> {st_data['turbidity_ntu']} NTU | <b>Water Temp:</b> {st_data['surface_water_temp_c']} °C<br>"
+                    f"<b>Salinity:</b> {st_data['salinity_ppt']} ppt | <b>pH:</b> {st_data['ph']}<br>"
+                    f"<i>Data Source: {st_data['source_id']} ({st_data['observation_period']})</i>"
+                ),
+                icon=folium.Icon(color="darkblue", icon="tint", prefix="glyphicon")
+            ).add_to(fg_stations)
+        fg_stations.add_to(m)
+
+        # 5. Render GeoJSON Sanctuaries Overlay (if present)
         if os.path.exists(SANCTUARIES_GEOJSON_PATH):
             try:
                 with open(SANCTUARIES_GEOJSON_PATH, "r", encoding="utf-8") as f:
@@ -551,7 +670,6 @@ def render_app():
                     )
                 ).add_to(m)
             except Exception:
-                # Ensure map and UI never crash if GeoJSON layer serialization fails
                 pass
 
         # Add Selected Inspection Point Marker
@@ -576,7 +694,16 @@ def render_app():
             icon=folium.Icon(color=marker_color, icon=marker_icon, prefix="glyphicon")
         ).add_to(m)
 
-        folium.LayerControl().add_to(m)
+        folium.Circle(
+            location=[center_lat, center_lon],
+            radius=2000,
+            color=marker_color,
+            weight=1.5,
+            fill=True,
+            fill_opacity=0.08
+        ).add_to(m)
+
+        folium.LayerControl(collapsed=False).add_to(m)
 
         # Render Map and Capture Clicks
         map_output = st_folium(
@@ -688,6 +815,16 @@ def render_app():
 
                         st.markdown(response_text)
                         st.caption(f"⚙️ Engine: {meta.get('engine', 'SafeHilsa')} | Tools Run: {meta.get('tool_count', 0)}")
+
+                        # Bidirectional map sync: auto-center map when agent identifies location
+                        if meta.get("focus_coordinates"):
+                            fc = meta["focus_coordinates"]
+                            if fc.get("lat") and fc.get("lon"):
+                                new_lat = round(float(fc["lat"]), 4)
+                                new_lon = round(float(fc["lon"]), 4)
+                                if (new_lat != st.session_state.selected_lat) or (new_lon != st.session_state.selected_lon):
+                                    st.session_state.selected_lat = new_lat
+                                    st.session_state.selected_lon = new_lon
 
             st.session_state.messages.append({
                 "role": "assistant",

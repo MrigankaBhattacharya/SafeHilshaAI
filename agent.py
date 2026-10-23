@@ -396,10 +396,22 @@ def _run_deterministic_agent(
             f"{alt_result}\n"
         )
 
+    # Extract focus coordinates for map synchronization
+    focus_coords = None
+    if loc_result and isinstance(loc_result, dict) and "coordinates" in loc_result:
+        coords = loc_result["coordinates"]
+        if coords.get("latitude") is not None and coords.get("longitude") is not None:
+            focus_coords = {"lat": float(coords["latitude"]), "lon": float(coords["longitude"])}
+    elif metrics_result and isinstance(metrics_result, dict) and "coordinates" in metrics_result:
+        coords = metrics_result["coordinates"]
+        if coords.get("lat") is not None and coords.get("lon") is not None:
+            focus_coords = {"lat": float(coords["lat"]), "lon": float(coords["lon"])}
+
     meta = {
         "engine": "SafeHilsa Deterministic Fallback Agent (Ollama Offline)",
         "tool_count": len(executed_tools),
-        "execution_mode": "local_fast"
+        "execution_mode": "local_fast",
+        "focus_coordinates": focus_coords
     }
 
     final_text = "\n\n".join(response_parts)
@@ -558,10 +570,24 @@ def run_safehilsa_agent(
         # Final turn completion
         final_response = client.chat(model=selected_model, messages=messages)
         content = final_response.message.content if hasattr(final_response, "message") else final_response.get("message", {}).get("content", "")
+        # Extract focus coordinates from executed tools
+        focus_coords = None
+        for t in executed_tools:
+            res = t.get("result", {})
+            if isinstance(res, dict) and "coordinates" in res:
+                c = res["coordinates"]
+                if isinstance(c, dict):
+                    lat = c.get("latitude", c.get("lat"))
+                    lon = c.get("longitude", c.get("lon"))
+                    if lat is not None and lon is not None:
+                        focus_coords = {"lat": float(lat), "lon": float(lon)}
+                        break
+
         meta = {
             "engine": f"Ollama ({selected_model})",
             "tool_count": len(executed_tools),
-            "execution_mode": "neural_agentic"
+            "execution_mode": "neural_agentic",
+            "focus_coordinates": focus_coords
         }
         return content, executed_tools, meta
 
