@@ -79,13 +79,43 @@ RESPONSE STYLE:
 """
 
 
-def check_ollama_status(host: str = "http://localhost:11434") -> Dict[str, Any]:
+def check_ollama_status(host: str = "http://127.0.0.1:11434") -> Dict[str, Any]:
     """
-    Checks if local Ollama daemon is reachable and lists available models.
+
+    Supports native HTTP REST probe (zero dependency) and ollama client.
+    """
+    import urllib.request
+    clean_host = host.replace("localhost", "127.0.0.1") if "localhost" in host else host
+    clean_host = clean_host.rstrip("/")
+
+    # Check 1: Direct native HTTP REST probe (no pip package dependency)
+    try:
+        req = urllib.request.Request(f"{clean_host}/api/tags")
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                models_list = data.get("models", [])
+                model_names = [m.get("name", m.get("model", "")) for m in models_list]
+                if any("qwen2.5:1.5b" in m for m in model_names):
+                    model_names = sorted(model_names, key=lambda m: 0 if "qwen2.5:1.5b" in m else 1)
+                elif any("qwen2.5" in m for m in model_names):
+                    model_names = sorted(model_names, key=lambda m: 0 if "qwen2.5" in m else 1)
+                return {
+                    "online": True,
+                    "host": clean_host,
+                    "models": model_names,
+                    "error": None
+                }
+    except Exception as e:
+        http_err = str(e)
+    else:
+        http_err = "Non-200 response"
+    """
+
     """
     try:
         import ollama
-        client = ollama.Client(host=host)
+        client = ollama.Client(host=host.replace("localhost", "127.0.0.1") if "localhost" in host else host)
         models_resp = client.list()
         
         # models_resp might be a list or dict depending on ollama-python version
@@ -94,6 +124,12 @@ def check_ollama_status(host: str = "http://localhost:11434") -> Dict[str, Any]:
             model_names = [m.model for m in models_resp.models]
         elif isinstance(models_resp, dict) and "models" in models_resp:
             model_names = [m.get("name", m.get("model", "")) for m in models_resp["models"]]
+        
+        # Prioritize lightweight qwen2.5:1.5b as primary option in model selector
+        if any("qwen2.5:1.5b" in m for m in model_names):
+            model_names = sorted(model_names, key=lambda m: 0 if "qwen2.5:1.5b" in m else 1)
+        elif any("qwen2.5" in m for m in model_names):
+            model_names = sorted(model_names, key=lambda m: 0 if "qwen2.5" in m else 1)
         
         return {
             "online": True,
@@ -423,7 +459,7 @@ def run_safehilsa_agent(
     current_lat: Optional[float] = None,
     current_lon: Optional[float] = None,
     chat_history: Optional[List[Dict[str, str]]] = None,
-    model_name: str = "llama3.2",
+    model_name: str = "qwen2.5:1.5b",
     host: str = "http://localhost:11434",
     date_str: Optional[str] = None
 ) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
@@ -458,13 +494,15 @@ def run_safehilsa_agent(
     if not any(selected_model in m for m in available):
         # Pick first available or fallback
         if available:
-            selected_model = available[0]
+            # Prioritize lightweight qwen2.5:1.5b on CPU if available
+            qwen_candidates = [m for m in available if "qwen2.5:1.5b" in m] or [m for m in available if "qwen" in m]
+            selected_model = qwen_candidates[0] if qwen_candidates else available[0]
         else:
             return _run_deterministic_agent(user_prompt, current_lat, current_lon, chat_history, date_str=date_str)
 
     try:
         import ollama
-        client = ollama.Client(host=host)
+        client = ollama.Client(host=host.replace("localhost", "127.0.0.1") if "localhost" in host else host)
 
         # Context-augmented system message
         lat_str = f"{current_lat:.4f}" if current_lat is not None else "Not provided"
@@ -506,7 +544,13 @@ def run_safehilsa_agent(
             response = client.chat(
                 model=selected_model,
                 messages=messages,
-                tools=OLLAMA_TOOLS_SCHEMA
+                tools=OLLAMA_TOOLS_SCHEMA,
+                options={
+                    "num_predict": 128,  # Restricts answer generation length to eliminate CPU rambling
+                    "num_ctx": 1024,     # Reduces context memory evaluation overhead from 4096 down to 1024 tokens
+                    "num_thread": 4,     # Forces multi-core CPU thread execution
+                    "temperature": 0.1   # Minimizes token choice sampling latency
+                }
             )
 
             response_msg = response.message
@@ -568,7 +612,16 @@ def run_safehilsa_agent(
                 })
 
         # Final turn completion
-        final_response = client.chat(model=selected_model, messages=messages)
+        final_response = client.chat(
+            model=selected_model,
+            messages=messages,
+            options={
+                "num_predict": 128,  # Restricts answer generation length to eliminate CPU rambling
+                "num_ctx": 1024,     # Reduces context memory evaluation overhead from 4096 down to 1024 tokens
+                "num_thread": 4,     # Forces multi-core CPU thread execution
+                "temperature": 0.1   # Minimizes token choice sampling latency
+            }
+        )
         content = final_response.message.content if hasattr(final_response, "message") else final_response.get("message", {}).get("content", "")
         # Extract focus coordinates from executed tools
         focus_coords = None

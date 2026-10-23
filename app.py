@@ -409,17 +409,20 @@ def render_app():
 
         # 3. LLM Engine & Ollama Configuration
         st.markdown("#### 🧠 Local AI Engine")
-        ollama_host = st.text_input("Ollama Host URL", value="http://localhost:11434")
+        ollama_host = st.text_input("Ollama Host URL", value="http://127.0.0.1:11434")
         ollama_info = check_ollama_status(host=ollama_host)
         
         if ollama_info["online"]:
             st.success(f"🟢 Ollama Online ({len(ollama_info['models'])} models found)")
-            model_options = ollama_info["models"] if ollama_info["models"] else ["llama3.2", "qwen2.5"]
+            model_options = ollama_info["models"] if ollama_info["models"] else ["qwen2.5:1.5b", "qwen2.5", "llama3.2"]
             selected_model = st.selectbox("Active Model", options=model_options)
         else:
             st.warning("🟡 Ollama Offline (Using Fast Local Fallback Agent)")
-            st.caption("Start Ollama (`ollama run llama3.2`) for neural function-calling.")
-            selected_model = "llama3.2"
+            err_detail = ollama_info.get("error")
+            if err_detail:
+                st.caption(f"Status: `{err_detail}`")
+            st.caption("If offline, open a new terminal and run: `ollama serve`")
+            selected_model = "qwen2.5:1.5b"
 
         st.divider()
 
